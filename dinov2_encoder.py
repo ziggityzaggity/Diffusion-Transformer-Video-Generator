@@ -34,7 +34,7 @@ def load_dinov2(device=None):
     return model, device
 
 
-def extract_features(model, frames, device):
+def extract_patch_tokens(model, frames, device):
     """
     Input shape: [Batch_size, 3, 224, 224]
     Output shape: [Batch_size, 256, 384]

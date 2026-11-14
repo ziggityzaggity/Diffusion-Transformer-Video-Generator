@@ -6,7 +6,7 @@ from PIL import Image
 
 from dinov2_encoder import (
     load_dinov2,
-    extract_features,
+    extract_patch_tokens,
     preprocess
 )
 
@@ -14,7 +14,7 @@ from dinov2_encoder import (
 VIDEO_PATH = "samples/test_video.mp4"
 
 # Where extracted features will be saved
-OUTPUT_PATH = "features/test_video_features.pt"
+OUTPUT_PATH = "patch_tokens/test_video_tokens.pt"
 
 # Number of frames processed together
 BATCH_SIZE = 8
@@ -75,36 +75,42 @@ def main():
     print("Frames extracted:", len(frames))
 
     # Process frames in batches to reduce GPU memory use
-    all_features = []
+    all_tokens = []
 
     for start in range(0, len(frames), BATCH_SIZE):
-        batch_frames = frames[start:start + BATCH_SIZE]
+        
+        # a small bug here: the last batch may be smaller than BATCH_SIZE, so we need to handle that case
+        if start + BATCH_SIZE > len(frames):
+            batch_frames = frames[start:len(frames)]
+        else:
+            batch_frames = frames[start:start + BATCH_SIZE]
+        
         batch = torch.stack(batch_frames)
 
-        features = extract_features(model, batch, device)
+        patch_tokens = extract_patch_tokens(model, batch, device)
 
-        # Save features in float16 to reduce disk usage
-        all_features.append(features.half())
+        # Save patch tokens in float16 to reduce disk usage
+        all_tokens.append(patch_tokens.half())
 
         print(
             f"Processed {min(start + BATCH_SIZE, len(frames))}"
             f"/{len(frames)} frames"
         )
 
-    # Combine features from all batches
-    video_features = torch.cat(all_features, dim=0)
+    # Combine patch tokens from all batches
+    video_patch_tokens = torch.cat(all_tokens, dim=0)
 
     # Create output folder
     Path(OUTPUT_PATH).parent.mkdir(
         parents=True, exist_ok=True
     )
 
-    # Save extracted features
-    torch.save(video_features, OUTPUT_PATH)
+    # Save extracted patch tokens
+    torch.save(video_patch_tokens, OUTPUT_PATH)
 
-    print("Feature shape:", video_features.shape)
+    print("Patch token shape:", video_patch_tokens.shape)
     print("Saved to:", OUTPUT_PATH)
-    print("SUCCESS: Video feature extraction complete!")
+    print("SUCCESS: Video patch tokens extraction complete!")
 
 
 if __name__ == "__main__":

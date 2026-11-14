@@ -1,0 +1,11 @@
+# PyTorch: on the AMD GPU server, install the ROCm build first, since the
+# PyPI default is the NVIDIA (CUDA) build:
+#   pip install --index-url https://download.pytorch.org/whl/rocm7.1 torch torchvision
+torch
+torchvision
+
+# Video reading (cv2) and image conversion (PIL)
+opencv-python
+Pillow
+
+# DINOv2 is loaded with torch.hub, so it needs no separate package.
