@@ -34,14 +34,14 @@ def load_dinov2(device=None):
     return model, device
 
 
-def extract_patch_tokens(model, frames, device):
+def extract_tokens(model, frames, device):
     """
     Input shape: [Batch_size, 3, 224, 224]
-    Output shape: [Batch_size, 256, 384]
+    Output: patch tokens [Batch_size, 256, 384] and CLS tokens [Batch_size, 384]
     """
     with torch.inference_mode():
         frames = frames.to(device)
         result = model.forward_features(frames)
-        patches = result["x_norm_patchtokens"]
+        patches, cls_token = result["x_norm_patchtokens"], result["x_norm_clstoken"]
 
-    return patches.cpu()
+    return (patches.cpu(), cls_token.cpu())

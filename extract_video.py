@@ -3,21 +3,72 @@ import cv2
 import torch
 from pathlib import Path
 from PIL import Image
+import numpy as np
 
 from dinov2_encoder import (
     load_dinov2,
-    extract_patch_tokens,
+    extract_tokens,
     preprocess
 )
 
 # Video to process
-VIDEO_PATH = "samples/test_video.mp4"
+VIDEO_PATH = "/home/medcvr/dataset/LDPolypVideo/pos_videos/videos with polyps/1_9.avi"
 
 # Where extracted features will be saved
 OUTPUT_PATH = "patch_tokens/test_video_tokens.pt"
 
 # Number of frames processed together
 BATCH_SIZE = 8
+
+# we need to find the crop box for the endoscope image area, so we can crop out the black border
+def find_crop_box(cap, num_samples=10):
+    """Find the endoscope image area (x, y, w, h) from frames spread through the video."""
+
+    # count total frames
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # pick 10 evenly spaced frames to find the crop box
+    positions = np.linspace(0, total - 1, num_samples).astype(int)
+
+    # convert each 
+    gray_frames = []
+    for i in positions:
+        # jump to the frame position and read the frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
+        success, frame = cap.read()
+
+        if not success:
+            continue
+
+        # convert to grayscale
+        gray_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+
+    if not gray_frames:
+        raise RuntimeError("Could not read any frames to find the crop box")
+
+    # brightest value at each pixel across the sampled frames
+    combined = np.max(np.stack(gray_frames), axis=0)
+
+    # turns the image into black and white.
+    corners = [combined[:20, :20], combined[:20, -20:], combined[-20:, :20], combined[-20:, -20:]]
+    border_level = np.median(np.concatenate([c.ravel() for c in corners]))
+    _, thresh = cv2.threshold(combined, border_level + 15, 255, cv2.THRESH_BINARY)
+
+    # find the outline of each white region
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # no white regions found
+    if not contours:
+        height, width = combined.shape
+        return 0, 0, width, height
+
+    # keep biggest region
+    largest_contour = max(contours, key=cv2.contourArea)
+    
+    # find the bounding box of the largest contour
+    x, y, w, h = cv2.boundingRect(largest_contour)
+
+    return x, y, w, h
 
 
 def extract_frames(video_path):
@@ -34,6 +85,9 @@ def extract_frames(video_path):
         cap.release()
         raise RuntimeError("Could not determine video FPS")
 
+    x, y, w, h = find_crop_box(cap)  # Find the crop box for the endoscope image area
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to the first frame
+    
     frames = []
     frame_index = 0
 
@@ -45,9 +99,17 @@ def extract_frames(video_path):
 
         # Sample approximately one frame per second
         if frame_index % max(1, round(fps)) == 0:
+            
+            frame = frame[y:y+h, x:x+w]
+            if frame_index == 0:
+                # save cropped frame for debugging
+                # it crops the date out partly
+                cv2.imwrite("cropped_frame.jpg", frame)
+                # continue
+                
             # OpenCV uses BGR; PIL uses RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
+            
             image = Image.fromarray(frame)
 
             # Apply the same preprocessing as our image test
@@ -76,7 +138,7 @@ def main():
 
     # Process frames in batches to reduce GPU memory use
     all_tokens = []
-
+    all_cls = []
     for start in range(0, len(frames), BATCH_SIZE):
         
         # a small bug here: the last batch may be smaller than BATCH_SIZE, so we need to handle that case
@@ -87,28 +149,39 @@ def main():
         
         batch = torch.stack(batch_frames)
 
-        patch_tokens = extract_patch_tokens(model, batch, device)
+        patch_tokens, batch_cls = extract_tokens(model, batch, device)
 
         # Save patch tokens in float16 to reduce disk usage
         all_tokens.append(patch_tokens.half())
-
+        # save cls tokens in float16 to reduce disk usage
+        all_cls.append(batch_cls.half())
+        
         print(
             f"Processed {min(start + BATCH_SIZE, len(frames))}"
             f"/{len(frames)} frames"
         )
 
+
     # Combine patch tokens from all batches
     video_patch_tokens = torch.cat(all_tokens, dim=0)
-
+    # combine cls tokens from all batches
+    video_cls_tokens = torch.cat(all_cls, dim=0)
+    
+    # 256 patches per frame, each patch token is 384-dimensional
+    print("Total tokens:", video_patch_tokens.shape[0] * video_patch_tokens.shape[1])
+    
     # Create output folder
     Path(OUTPUT_PATH).parent.mkdir(
         parents=True, exist_ok=True
     )
 
     # Save extracted patch tokens
-    torch.save(video_patch_tokens, OUTPUT_PATH)
-
+    torch.save({"cls": video_cls_tokens, "patch": video_patch_tokens}, OUTPUT_PATH)    
+    some_loaded_tokens = torch.load(OUTPUT_PATH)  # sanity check
+    print("Loaded patch shape:", some_loaded_tokens["patch"].shape)
+    print("Loaded CLS shape:", some_loaded_tokens["cls"].shape)
     print("Patch token shape:", video_patch_tokens.shape)
+    print("CLS token shape:", video_cls_tokens.shape)
     print("Saved to:", OUTPUT_PATH)
     print("SUCCESS: Video patch tokens extraction complete!")
 
