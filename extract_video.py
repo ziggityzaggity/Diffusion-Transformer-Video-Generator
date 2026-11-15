@@ -43,6 +43,13 @@ def find_crop_box(cap, num_samples=10):
         # convert to grayscale
         gray_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
 
+    return crop_box_from_grays(gray_frames)
+
+
+# shared by videos (find_crop_box) and frame folders, which have no video capture
+def crop_box_from_grays(gray_frames):
+    """Find the endoscope image area (x, y, w, h) from a list of grayscale frames."""
+
     if not gray_frames:
         raise RuntimeError("Could not read any frames to find the crop box")
 
@@ -125,6 +132,31 @@ def extract_frames(video_path):
     return frames
 
 
+def encode_frames(model, frames, device):
+    """Run DINOv2 over preprocessed frames in batches.
+
+    Returns CLS tokens [T, 384] and patch tokens [T, 256, 384], both float16.
+    """
+
+    # Process frames in batches to reduce GPU memory use
+    all_tokens = []
+    all_cls = []
+    for start in range(0, len(frames), BATCH_SIZE):
+
+        # slicing stops at the end of the list, so the smaller last batch needs no special case
+        batch = torch.stack(frames[start:start + BATCH_SIZE])
+
+        patch_tokens, batch_cls = extract_tokens(model, batch, device)
+
+        # Save patch tokens in float16 to reduce disk usage
+        all_tokens.append(patch_tokens.half())
+        # save cls tokens in float16 to reduce disk usage
+        all_cls.append(batch_cls.half())
+
+    # Combine tokens from all batches
+    return torch.cat(all_cls, dim=0), torch.cat(all_tokens, dim=0)
+
+
 def main():
     # Load pretrained, frozen DINOv2
     model, device = load_dinov2()
@@ -136,37 +168,8 @@ def main():
 
     print("Frames extracted:", len(frames))
 
-    # Process frames in batches to reduce GPU memory use
-    all_tokens = []
-    all_cls = []
-    for start in range(0, len(frames), BATCH_SIZE):
-        
-        # a small bug here: the last batch may be smaller than BATCH_SIZE, so we need to handle that case
-        if start + BATCH_SIZE > len(frames):
-            batch_frames = frames[start:len(frames)]
-        else:
-            batch_frames = frames[start:start + BATCH_SIZE]
-        
-        batch = torch.stack(batch_frames)
+    video_cls_tokens, video_patch_tokens = encode_frames(model, frames, device)
 
-        patch_tokens, batch_cls = extract_tokens(model, batch, device)
-
-        # Save patch tokens in float16 to reduce disk usage
-        all_tokens.append(patch_tokens.half())
-        # save cls tokens in float16 to reduce disk usage
-        all_cls.append(batch_cls.half())
-        
-        print(
-            f"Processed {min(start + BATCH_SIZE, len(frames))}"
-            f"/{len(frames)} frames"
-        )
-
-
-    # Combine patch tokens from all batches
-    video_patch_tokens = torch.cat(all_tokens, dim=0)
-    # combine cls tokens from all batches
-    video_cls_tokens = torch.cat(all_cls, dim=0)
-    
     # 256 patches per frame, each patch token is 384-dimensional
     print("Total tokens:", video_patch_tokens.shape[0] * video_patch_tokens.shape[1])
     
