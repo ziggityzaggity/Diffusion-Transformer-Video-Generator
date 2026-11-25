@@ -38,24 +38,40 @@ class ABMIL(model):
     # attention based multiple instance learning
     def __init__(self, input_dim = 384, hidden_dim = 128):
         super().__init__()
-        self.first_layer = nn.Linear(input_dim, 128)
-        self.second_layer = nn.Linear(128, 64)
+        self.first_layer = nn.Linear(input_dim, hidden_dim)
+        self.second_layer = nn.Linear(hidden_dim, 64)
         self.third_layer = nn.Linear(64, 1)
-        self.fourth_layer = nn.Linear(128, 1)
+        self.fourth_layer = nn.Linear(hidden_dim, 1)
         self.relu = nn.ReLU()
-        self.tahn = nn.tahn()
-        self.softmax = nn.softmax()
+        self.tanh = nn.Tanh()
+        self.softmax = nn.Softmax(dim=0)
+        self.dropout= nn.Dropout(0.2)
         
         # not the type of encoder we learnt in lecture
         self.encoder = nn.Sequential(self.first_layer,
-                                   self.relu)
+                                   self.relu,
+                                   self.dropout)
         # not self attention we learnt in lecture
-        self.attention_netowrk = nn.Sequential(self.second_layer,
-                                           self.tahn,
+        self.attention_network = nn.Sequential(self.second_layer,
+                                           self.tanh,
                                            self.third_layer,
                                            self.softmax)
-        self.weighted_average = torch.dot_product(self.encoder, self.attention_netowrk)
-        self.model = self.fourth_layer(self.weighted_average)
-        
-    def forward(input_tensor):
-        self.model(input_tensor)
+    def forward(self, input_tensor):
+        # self.model(input_tensor)
+        # self.weighted_average = torch.dot_product(self.encoder, self.attention_netowrk)
+        # self.model = self.fourth_layer(self.weighted_average)
+        #   [T, 128]
+        h = self.encoder(input_tensor) 
+        #    [T, 1]
+        a = self.attention_network(h)
+        #    [T, 128]
+        z = (a * h)
+        #    [128], we add the value on the same dimension across frame, 
+        #  because it is how it works, we want to compare each feature at the end
+        weighted_average = z.sum(dim = 0)
+        video_logit = self.fourth_layer(weighted_average).squeeze(-1)
+        frame_logits = self.fourth_layer(h).squeeze(-1)
+        return {"video_logit": video_logit, "frame_logits": frame_logits}
+
+    
+       
