@@ -2,6 +2,7 @@
 # output: a dict with video_logit(one number) and frame_logits([T]), one number per frame
 import torch.nn as nn
 import torch
+import math 
 class model(nn.Module):
     def __init__(self):
         super().__init__()
@@ -72,6 +73,53 @@ class ABMIL(model):
         video_logit = self.fourth_layer(weighted_average).squeeze(-1)
         frame_logits = self.fourth_layer(h).squeeze(-1)
         return {"video_logit": video_logit, "frame_logits": frame_logits}
-
     
-       
+class frame_level_transformer(model):
+    def __init__(self, input_dim = 384, hidden_dim=256):
+        super().__init__()
+        self.first_layer = nn.Linear(input_dim, hidden_dim)
+        # self.second_layer = nn.Linear()
+        # create cls token so we can append it at the end
+        self.cls_video_token = nn.Parameter(torch.zeros(1, hidden_dim))
+        # transformer layers
+        transformer_block = nn.TransformerEncoderLayer(d_model=256, nhead=4,dim_feedforward=512,dropout=0.2,batch_first=True)
+        # the encoder with two transformer block
+        self.encoder = nn.TransformerEncoder(transformer_block, num_layers=2)
+        # final classifer
+        self.classifier = nn.Linear(hidden_dim, 1)
+        
+    def time_embedding(self, frames, dim):
+        # each framne's position
+        positions = torch.arange(frames).unsqueeze(1).float()
+        # turning rates for each hand, a hand isone of the turning pointers on a clock face
+        speeds = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim)) 
+        # how far each hand has turned at each frame
+        angles = positions * speeds
+        # positional encoding
+        positional_encoding = torch.zeros(frames, dim)
+        positional_encoding[:, 0::2] = torch.sin(angles)
+        positional_encoding[:, 1::2] = torch.cos(angles)
+        
+        return positional_encoding
+    
+    def forward(self, input_tensor):
+        # position_tokens = time_embedding()
+        z = self.first_layer(input_tensor)
+        position_token = self.time_embedding(z.shape[0], 256).to(z.device)
+        # the position token is [T, 258], each row represents a frame's position information
+        # in specific, a speicific pattern of sine and cosine values for a frame 
+        frame_tokens = z + position_token
+        # frame tokens now hold both what the frame shows as well as position information
+        frame_and_cls_tokens = torch.cat([self.cls_video_token, frame_tokens], dim=0)
+        # need to add one dimention at the front to hold label
+        # [T+1, 258] -> [1, T+1, 258]
+        batched = frame_and_cls_tokens.unsqueeze(0)
+        # [1, T+1, 258] -> [T+1, 258]
+        encoded = self.encoder(batched).squeeze(0)
+        # we get the video logit after summarizing the cls token row into 1 number
+        video_logit = self.classifier(encoded[0]).squeeze(-1)
+        # similarly, we also summarize each frame's score using a classifier layer
+        frame_logits = self.classifier(encoded[1:]).squeeze(-1)
+        return {"video_logit": video_logit, "frame_logits": frame_logits}
+        # output = self.transformer_block(input_tensor)
+        # self.classifier(something)
